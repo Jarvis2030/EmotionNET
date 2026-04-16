@@ -1,26 +1,17 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-import os
-import h5py
 
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
-import torch.optim as optim
-import torch.nn.functional as F
-from sklearn.metrics import confusion_matrix
+from torch.utils.data import TensorDataset
 
+from scipy.signal import butter, filtfilt, stft
+from scipy.interpolate import interp1d
 
-import snntorch.functional
-
-from ref_cnn_snn_model import CnnSnn
-
-import snntorch.functional
-
-import lava.lib.dl.slayer as slayer
 
 from sklearn.model_selection import train_test_split
+
+fs = 128 # Hz, change if needed
 
 
 # =============================================================================
@@ -229,6 +220,7 @@ def load_data(
     valid_df = df[df["group_id"].isin(valid_groups)].copy()
     test_df  = df[df["group_id"].isin(test_groups)].copy()
 
+
     # -----------------------------
     # 5) Convert table -> tensors
     # -----------------------------
@@ -246,8 +238,12 @@ def load_data(
                 raise ValueError(
                     f"Each EEG_array must have shape (C, T), got shape {x.shape}"
                 )
+            
+            # ===== EEG_band_analysis =====
+            featured_x = EEG_band_analysis(fs=fs, seg=x, out_T=window_size)
 
-            x_list.append(x)
+
+            x_list.append(featured_x)
             y_list.append(int(row["label"]))
 
         x = np.stack(x_list, axis=0)   # (N, C, T)
@@ -371,6 +367,86 @@ def label_balancing(seg_eeg):
     seg_eeg = df_bal_with_label.drop(columns=["trial_id"])
 
     return seg_eeg
+
+def EEG_band_analysis(fs, seg, freq_bend = [(1,4), (4,8), (8,13), (13,30)], out_T = 1):
+    """
+    Input: 
+    fs:
+        sampling rate.
+    seg:
+        one row = 14 channels of segmented EEG
+        shape = [ch, seq_window]
+
+    freq_band:
+        Desired band to be extracted
+    
+    out_T:
+        Desired sample points per segment to be output 
+
+    Pipeline:
+        1. segment each full trial signal into windows
+        2. stack 14 channels into 2D EEG_array of shape (C, T_window)
+        3. s
+
+    Returns:
+
+    """
+    C, T = seg.shape
+    band_list = []
+
+    for (low, high) in freq_bend:
+        band_sig = np.zeros_like(seg)
+        psd_all_ch = np.zeros_like(seg)
+
+        # for each channel
+        for ch in range(C):
+            x = seg[ch,:]
+            
+            # STFT: Zxx shape = (n_freq, n_time)
+            # 例如目標 1 秒視窗 -> nperseg ≈ fs * 1.0，但不能超過 T_raw
+            nperseg = max(16, min(out_T, T))  # 至少 16 samples，最多 T_raw
+
+            noverlap = int(nperseg * 0.5)
+            noverlap = min(noverlap, nperseg - 1)  
+            f, t, Zxx = stft(x, fs=fs, nperseg= nperseg, noverlap=noverlap)
+
+            # PSD
+            Pxx = np.abs(Zxx) ** 2  # (n_freq, n_time)
+
+            mask = (f >= low) & (f <= high)
+            if np.any(mask):
+                power_t = Pxx[mask, :].mean(axis=0).astype(np.float32)
+            else:
+                power_t = np.zeros(Pxx.shape[1], dtype=np.float32)
+            # power_t 現在是長度 n_time 的序列，要插值到 out_T
+            n_time = power_t.shape[0]
+            if n_time == 1:
+                # 只有一個時間點，就直接複製
+                seq = np.full((out_T,), power_t[0], dtype=np.float32)
+            else:
+                # 線性插值到 out_T 個時間點
+                x_src = np.linspace(0, 1, n_time)
+                x_tgt = np.linspace(0, 1, out_T)
+                f_interp = interp1d(x_src, power_t, kind='linear')
+                seq = f_interp(x_tgt).astype(np.float32)  # (out_T,)
+
+            psd_all_ch[ch,:] = seq
+
+            # decompose the original EEG
+            b, a = butter(4, [low/(fs/2), high/(fs/2)], btype='band')
+            band_sig[ch,:] = filtfilt(b, a, x)
+        
+        # append back to data
+        # 4 band data, 4 PSD corresponding to each band, 1 original eeg
+        band_list.append(band_sig)   # [C,T]
+        band_list.append(psd_all_ch)
+
+    band_list.append(seg)
+
+    # Stack back to the 3D shape
+    featured_x = np.stack(band_list, axis=0)
+    print(featured_x.shape)
+    return featured_x  # [9, C, T]
 
 
 # ===== test ======
