@@ -371,7 +371,7 @@ def mat_dataset_load(path = '/Users/linyuchun/Desktop/Project/SNN/data/EEG_clean
     seg_eeg = seg_eeg.drop(columns=eeg_cols)
     return seg_eeg
 
-def label_balancing(seg_eeg):
+def label_balancing(seg_eeg, random_state=42):
     """
     seg_eeg 至少需要欄位:
       - dataset   (e.g. 'dreamer', 'seed')
@@ -381,9 +381,10 @@ def label_balancing(seg_eeg):
     若有多個 session, 建議多一欄 session_idx 一起納入 trial_id.
     """
 
-    df = seg_eeg.copy()
+    rng = np.random.default_rng(random_state)
+    df  = seg_eeg.copy()
 
-    # 1) 建立 trial_id = dataset + subject + (session_idx) + video
+    # ── 1. 建立 trial_id ────────────────────────────────────────────────────
     if "session_idx" in df.columns:
         df["trial_id"] = (
             df["dataset"].astype(str) + "__"
@@ -398,13 +399,9 @@ def label_balancing(seg_eeg):
             + df["video"].astype(str)
         )
 
-    # 2) trial level df: 一個 trial 一列
-    agg_dict = {
-        "dataset": "first",
-        "subject": "first",
-        "video": "first",
-        "label": "first",
-    }
+    # ── 2. Trial-level df（一個 trial 一列）────────────────────────────────
+    agg_dict = {"dataset": "first", "subject": "first",
+                "video": "first", "label": "first"}
     if "session_idx" in df.columns:
         agg_dict["session_idx"] = "first"
 
@@ -414,59 +411,82 @@ def label_balancing(seg_eeg):
           .reset_index()
     )
 
-    print("df_trials (trial-level):")
-    print(df_trials.head())
-    print("len(df_trials) =", len(df_trials))
-
-    # 3) trial level 做 4 類平衡
     labels_trial = df_trials["label"].values
-
-    idx0 = np.where(labels_trial == 0)[0]
-    idx1 = np.where(labels_trial == 1)[0]
-    idx2 = np.where(labels_trial == 2)[0]
-    idx3 = np.where(labels_trial == 3)[0]
-
-    n0, n1, n2, n3 = map(len, [idx0, idx1, idx2, idx3])
+    n0 = (labels_trial == 0).sum()
+    n1 = (labels_trial == 1).sum()
+    n2 = (labels_trial == 2).sum()
+    n3 = (labels_trial == 3).sum()
     print(f"Trial-level counts before balance: [0:{n0}, 1:{n1}, 2:{n2}, 3:{n3}]")
 
-    n_per_class = min(n0, n1, n2, n3)
-    print(f"Using {n_per_class} trials per class (total {4 * n_per_class}).")
+    # ── 3. Per-subject stratified random balancing ──────────────────────────
+    #
+    #   做法：
+    #   a) 對每個 subject，找出其 4 個 class 中最少的那個 class 的 trial 數 n_min_subj
+    #   b) 每個 class 在該 subject 內 random sample n_min_subj 個 trial
+    #   c) 合併所有 subject 的結果
+    #
+    #   這樣做的好處：
+    #   - 不會因為某些 subject HAHV 特別多而讓其他 subject 消失
+    #   - 每個 subject 在訓練集的 class 都是平衡的
+    # ────────────────────────────────────────────────────────────────────────
 
-    # 這裡你可以改成 random 選，先沿用原來的前 n_per_class 個
-    idx0_sel = idx0[:n_per_class]
-    idx1_sel = idx1[:n_per_class]
-    idx2_sel = idx2[:n_per_class]
-    idx3_sel = idx3[:n_per_class]
+    kept_trial_ids = []
+    subjects = sorted(df_trials["subject"].unique())
 
-    keep_idx = np.concatenate([idx0_sel, idx1_sel, idx2_sel, idx3_sel], axis=0)
+    per_subj_stats = []
+    for subj in subjects:
+        sub_df = df_trials[df_trials["subject"] == subj]
+        sub_labels = sub_df["label"].values
 
-    print("keep_idx min/max:", keep_idx.min(), keep_idx.max())
+        counts = [int((sub_labels == c).sum()) for c in range(4)]
+        n_min = min(c for c in counts if c > 0)   # 忽略完全沒有的 class
 
-    df_trials_bal = df_trials.iloc[keep_idx].reset_index(drop=True)
+        sel_ids = []
+        for c in range(4):
+            c_ids = sub_df.loc[sub_labels == c, "trial_id"].values
+            if len(c_ids) == 0:
+                continue
+            k = min(n_min, len(c_ids))
+            chosen = rng.choice(c_ids, size=k, replace=False)
+            sel_ids.extend(chosen.tolist())
 
-    print("Trial-level counts after balance:")
+        kept_trial_ids.extend(sel_ids)
+        per_subj_stats.append({
+            "subject": subj,
+            "before": counts,
+            "n_min": n_min,
+            "kept_per_class": n_min,
+        })
+
+    # 印出 per-subject 統計
+    print("\nPer-subject balancing summary:")
+    print(f"{'Subj':>5}  {'Before [0,1,2,3]':>22}  {'n_min':>6}  {'kept_total':>10}")
+    for s in per_subj_stats:
+        print(f"{s['subject']:>5}  {str(s['before']):>22}  {s['n_min']:>6}  {s['n_min']*4:>10}")
+
+    df_trials_bal = df_trials[df_trials["trial_id"].isin(kept_trial_ids)].reset_index(drop=True)
+
+    print(f"\nGlobal trial-level counts after per-subject balance:")
     print(df_trials_bal["label"].value_counts().sort_index())
+    print(f"Total balanced trials: {len(df_trials_bal)}")
 
-    # 4) 回到 segment/channel level，用保留的 trial_id 篩選
-    keep_trial_ids = df_trials_bal["trial_id"].values
-    mask_keep = df["trial_id"].isin(keep_trial_ids)
-    df_bal = df[mask_keep].reset_index(drop=True)
+    # ── 4. 回到 segment/channel level ──────────────────────────────────────
+    keep_set  = set(kept_trial_ids)
+    mask_keep = df["trial_id"].isin(keep_set)
+    df_bal    = df[mask_keep].reset_index(drop=True)
 
-    print("df_bal (segment/channel-level) shape:", df_bal.shape)
+    # 用 balanced trial 的 label 覆蓋（保險起見）
+    label_map = df_trials_bal.set_index("trial_id")["label"].to_dict()
+    df_bal["label"] = df_bal["trial_id"].map(label_map)
 
-    df_bal_with_label = df_bal.merge(
-        df_trials_bal[["trial_id", "label"]],
-        on="trial_id",
-        how="left",
-        suffixes=("", "_trial")
-    )
+    print(f"\nSegment/channel-level label counts after balancing:")
+    print(df_bal["label"].value_counts().sort_index())
+    print(f"df_bal shape: {df_bal.shape}")
 
-    print("Channel-level label counts after trial balancing:")
-    print(df_bal_with_label["label_trial"].value_counts().sort_index())
+    # 清掉 helper 欄位
+    df_bal = df_bal.drop(columns=["trial_id"])
 
-    df_bal_with_label = df_bal_with_label.drop(columns=["label_trial", "trial_id"])
-
-    return df_bal_with_label
+    return df_bal
 
 def EEG_band_analysis(fs, seg, freq_bend = [(1,4), (4,8), (8,13), (13,30)], out_T = 1):
     """

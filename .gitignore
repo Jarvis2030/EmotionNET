@@ -7,3 +7,12 @@ Working log.docx
 data/
 SNN-CNN.ipynb
 venv
+output_image
+output
+evaluation
+documentation
+live_demo
+old_version_codelive_demo/
+
+live_demo/
+*.npz
