@@ -11,7 +11,6 @@ Run:
 import sys
 import copy
 import random
-import argparse
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -34,12 +33,12 @@ from sklearn.metrics import confusion_matrix, classification_report
 from scipy.optimize import minimize
 from scipy.signal import resample
 
-from domain_alignment import coral_align
-from SNN_data import mat_dataset_load, EEG_band_analysis, label_balancing_soft
+from pipeline.domain_alignment import coral_align
+from pipeline.SNN_data import mat_dataset_load, EEG_band_analysis, label_balancing_soft
 
 # SNN model — imported only when --snn flag is used
 try:
-    from model_snn import EEGSNNRouteC, SNN_CONFIG, spike_rate_loss
+    from pipeline.model import EmotionNET, spike_rate_loss
 
     SNN_AVAILABLE = True
 except ImportError:
@@ -85,6 +84,11 @@ CONFIG = {
     'seed':                 42,
 
     'subjects':             None,   # None = all
+
+    'snn_out_channels'  : 50,
+    'snn_hidden'        : 50,
+    'snn_spike_weight'  : 1e-3,
+    'snn_target_rate'   : 0.1,
 }
 
 
@@ -97,7 +101,6 @@ def flag(msg):
     print(f'\n{"="*60}', flush=True)
     print(f'[{ts}]  {msg}', flush=True)
     print('='*60, flush=True)
-
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -1053,140 +1056,12 @@ def save_results(all_results, config):
     print(f'Chart → {out_dir}/LTSM_SNN_loso_chart.png')
 
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-
-    # ── Subject / mode ────────────────────────────────────────────────────
-    parser.add_argument('--subjects',     type=int, nargs='+', default=None,
-                        help='Subject IDs to run (default: all)')
-    parser.add_argument('--smoke',        action='store_true',
-                        help='Quick smoke test: 1 subject, 3 epochs, 50 segs')
-    parser.add_argument('--snn',          action='store_true',
-                        help='Use SNN model (requires snntorch)')
-    parser.add_argument('--dreamer-only', action='store_true',
-                        help='Benchmark: DREAMER LOSO only, no SEED-IV')
-    parser.add_argument('--seediv-only',  action='store_true',
-                        help='Benchmark: SEED-IV LOSO only, no DREAMER')
-    parser.add_argument('--no-coral',     action='store_true',
-                        help='Disable latent CORAL alignment')
-
-    # ── Loss weights ──────────────────────────────────────────────────────
-    parser.add_argument('--lambda-seed',  type=float, default=None,
-                        help='Weight for SEED-IV CE loss (default: CONFIG value)')
-    parser.add_argument('--lambda-mmd',   type=float, default=None,
-                        help='Weight for MMD loss (default: CONFIG value)')
-
-    # ── Training ──────────────────────────────────────────────────────────
-    parser.add_argument('--epochs',       type=int,   default=None,
-                        help='Number of training epochs')
-    parser.add_argument('--batch',        type=int,   default=None,
-                        help='Batch size')
-    parser.add_argument('--lr',           type=float, default=None,
-                        help='Learning rate')
-    parser.add_argument('--patience',     type=int,   default=None,
-                        help='Early stopping patience')
-    parser.add_argument('--warmup',       type=int,   default=None,
-                        help='Warmup epochs (DREAMER only before CORAL kicks in)')
-    parser.add_argument('--dropout',      type=float, default=None,
-                        help='Dropout rate')
-    parser.add_argument('--seed',         type=int,   default=None,
-                        help='Random seed')
-
-    # ── Model ─────────────────────────────────────────────────────────────
-    parser.add_argument('--out-channels', type=int,   default=None,
-                        help='CNN out_channels (ANN) / snn_out_channels (SNN)')
-    parser.add_argument('--lstm-hidden',  type=int,   default=None,
-                        help='LSTM hidden size')
-    parser.add_argument('--window',       type=int,   default=None,
-                        help='Window size in samples (default 384 = 3s@128Hz)')
-
-    # ── SNN-specific ──────────────────────────────────────────────────────
-    parser.add_argument('--snn-beta1',    type=float, default=None,
-                        help='LIF1 beta (membrane decay)')
-    parser.add_argument('--snn-beta2',    type=float, default=None,
-                        help='LIF2 beta (membrane decay)')
-    parser.add_argument('--snn-threshold',type=float, default=None,
-                        help='LIF spike threshold')
-
-    # ── Output ────────────────────────────────────────────────────────────
-    parser.add_argument('--run-name',     type=str,   default=None,
-                        help='Run name tag for output files (e.g. lr1e4_lmbd0.5). '
-                             'Output: output/<run-name>/  Default: output/')
-
-    args = parser.parse_args()
-
-    # ── Apply args → CONFIG ───────────────────────────────────────────────
-    if args.subjects:                          CONFIG['subjects']             = args.subjects
-    if args.lambda_seed  is not None:          CONFIG['lambda_seed']          = args.lambda_seed
-    if args.lambda_mmd   is not None:          CONFIG['lambda_mmd']           = args.lambda_mmd
-    if args.epochs       is not None:          CONFIG['num_epochs']           = args.epochs
-    if args.batch        is not None:          CONFIG['batch']                = args.batch
-    if args.lr           is not None:          CONFIG['lr']                   = args.lr
-    if args.patience     is not None:          CONFIG['early_stop_patience']  = args.patience
-    if args.warmup       is not None:          CONFIG['warmup_epochs']        = args.warmup
-    if args.dropout      is not None:          CONFIG['dropout']              = args.dropout
-    if args.seed         is not None:          CONFIG['seed']                 = args.seed
-    if args.out_channels is not None:          CONFIG['out_channels']         = args.out_channels
-    if args.lstm_hidden  is not None:          CONFIG['lstm_hidden']          = args.lstm_hidden
-    if args.window       is not None:          CONFIG['window_size']          = args.window
-    if args.snn_beta1    is not None:          CONFIG['snn_beta1']            = args.snn_beta1
-    if args.snn_beta2    is not None:          CONFIG['snn_beta2']            = args.snn_beta2
-    if args.snn_threshold is not None:         CONFIG['snn_threshold']        = args.snn_threshold
-    if args.lstm_hidden  is not None:          CONFIG['snn_lstm_hidden']      = args.lstm_hidden
-    if args.run_name     is not None:
-        CONFIG['out_dir']    = f'./output/{args.run_name}'
-        CONFIG['_run_name']  = args.run_name
-
-    if args.smoke:
-        print('\n⚡ SMOKE TEST MODE: 1 subject, 3 epochs, 50 segs cap\n')
-        CONFIG['subjects']            = [1]
-        CONFIG['num_epochs']          = 3
-        CONFIG['early_stop_patience'] = 99
-        CONFIG['_smoke']              = True
-    else:
-        CONFIG['_smoke'] = False
-
-    if args.snn:
-        if not SNN_AVAILABLE:
-            print('ERROR: snntorch not installed. Cannot use --snn flag.')
-            sys.exit(1)
-        CONFIG['snn_out_channels'] = 50
-        CONFIG['snn_hidden']       = 50
-        CONFIG['snn_beta1']        = 0.9
-        CONFIG['snn_beta2']        = 0.9
-        CONFIG['snn_threshold']    = 0.3
-        CONFIG['snn_spike_weight'] = 0.0
-        CONFIG['snn_target_rate']  = 0.1
-        CONFIG['_use_snn'] = True
-        print('\n🧠 SNN MODE: CNN + Delta Encoder + 2 Dense\n')
-    else:
-        CONFIG['_use_snn'] = False
-
-    # Benchmark modes
-    CONFIG['_dreamer_only'] = args.dreamer_only
-    CONFIG['_seediv_only']  = args.seediv_only
-    CONFIG['_no_coral']     = args.no_coral
-    if args.no_coral:
-        print('\n⚠️  CORAL disabled — CE_S uses raw SEED-IV latent\n')
-    if args.dreamer_only and args.seediv_only:
-        print('ERROR: cannot use --dreamer-only and --seediv-only together.')
-        sys.exit(1)
-    if args.dreamer_only:
-        print('\n📊 BENCHMARK MODE: DREAMER LOSO only (no SEED-IV)\n')
-    if args.seediv_only:
-        print('\n📊 BENCHMARK MODE: SEED-IV LOSO only (no DREAMER)\n')
-
-    set_seed(CONFIG['seed'])
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f'\nDevice: {device}')
-    print(f'Subjects: {CONFIG["subjects"]}  lambda_seed: {CONFIG["lambda_seed"]}  lambda_mmd: {CONFIG["lambda_mmd"]}')
-
-    out_dir = Path(CONFIG['out_dir'])
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     # Step 1: Load
     df_d = load_dreamer(CONFIG['dreamer_csv'])

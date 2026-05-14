@@ -19,10 +19,10 @@ import torch.nn as nn
 import lava.lib.dl.slayer as slayer
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Main SNN Model
+# ANN Benchmark version
 # ─────────────────────────────────────────────────────────────────────────────
 
-class EEGSNNRouteC(nn.Module):
+class EmotionNET_ANN(nn.Module):
     def __init__(self, in_channels=9, eeg_channels=14,
                  out_channels=50, hidden=50,
                  n_classes=4, fs=128, decision_window=3,
@@ -112,33 +112,6 @@ class EEGSNNRouteC(nn.Module):
         return logits
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Loss helper (spike regularization)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def spike_rate_loss(model, target_rate=0.1, weight=1e-3):
-    total = 0.0
-    count = 0
-    for m in model.modules():
-        if hasattr(m, 'neuron') and hasattr(m.neuron, 'spike'):
-            s = m.neuron.spike
-            if s is not None:
-                total += (s.mean() - target_rate).pow(2)
-                count += 1
-    return weight * total if count > 0 else torch.tensor(0.0)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CONFIG additions for SNN
-# ─────────────────────────────────────────────────────────────────────────────
-
-SNN_CONFIG = {
-    'snn_out_channels'  : 50,
-    'snn_hidden'        : 50,
-    'snn_spike_weight'  : 1e-3,
-    'snn_target_rate'   : 0.1,
-}
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Neuron params (CUBA LIF)
@@ -200,7 +173,7 @@ class DeltaEncoderBlock(nn.Module):
 # Main SNN Model
 # ─────────────────────────────────────────────────────────────────────────────
 
-class EEGSNNRouteC(nn.Module):
+class EmotionNET(nn.Module):
     """
     Delta Encoder + 2 FC (CUBA LIF) + linear readout head.
 
@@ -328,26 +301,4 @@ def spike_rate_loss(model, target_rate=0.1, weight=1e-3):
         return torch.tensor(0.0, device=device)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CONFIG additions for SNN (merge into run_pipeline CONFIG)
-# ─────────────────────────────────────────────────────────────────────────────
 
-SNN_CONFIG = {
-    'snn_hidden1'       : 256,
-    'snn_hidden2'       : 128,
-    'snn_hidden3'       : 64,
-    'snn_threshold'     : 1.0,
-    'snn_current_decay' : 0.25,
-    'snn_voltage_decay' : 0.03,
-    'snn_spike_weight'  : 1e-3,   # spike rate regularization weight
-    'snn_target_rate'   : 0.1,    # target mean spike rate
-}
-
-model = EEGSNNRouteC()
-x = torch.randn(4, 9, 384, 14)
-print('Input:', x.shape)
-with torch.no_grad():
-    logits, feat = model(x, return_feat=True)
-print('feat:', feat.shape)    # should be (4, 50)
-print('logits:', logits.shape) # should be (4, 4)
-print('OK')

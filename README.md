@@ -2,6 +2,8 @@
 
 A hybrid deep learning and spiking neural network (SNN) framework for cross-subject EEG emotion recognition using the DREAMER and SEED-IV datasets.
 
+The goal of this work is to investigate whether bio-inspired spiking architectures can achieve competitive EEG emotion recognition performance while improving computational efficiency for future edge-device applications.
+
 This project combines:
 - Temporal CNN feature extraction
 - Spiking Neural Networks (LIF neurons)
@@ -9,45 +11,11 @@ This project combines:
 - Domain alignment techniques (CORAL + MMD)
 - Cross-subject LOSO evaluation
 
-The goal of this work is to investigate whether bio-inspired spiking architectures can achieve competitive EEG emotion recognition performance while improving computational efficiency for future edge-device applications.
-
 ---
 
 # Project Overview
 
-## Motivation
-
-EEG-based emotion recognition suffers from:
-- High subject variability
-- Domain shift between datasets
-- Limited generalization across subjects
-- High computational cost for edge deployment
-
-To address these challenges, we propose a hybrid CNN–SNN–LSTM architecture with latent-space domain alignment.
-
----
-
 # Model Architecture
-
-The proposed pipeline consists of:
-
-text
-EEG Signal
-    ↓
-Band Feature Extraction
-    ↓
-Temporal CNN
-    ↓
-Delta Encoding
-    ↓
-2× LIF Spiking Layers (SNN)
-    ↓
-LSTM Temporal Modeling
-    ↓
-Classification Head
-
-
-# Key Components
 
 ### 1. CNN Feature Extraction
 
@@ -95,48 +63,6 @@ To reduce domain shift between DREAMER and SEED-IV:
 
 ---
 
-# Preprocessing Pipeline
-
-## Artifact Rejection
-
-Segments are removed if:
-
-* Peak-to-peak amplitude exceeds threshold
-* Signal variance is too low (flat signal)
-
-## Segmentation
-
-EEG signals are segmented into fixed windows:
-
-```python
-window_size = 384
-stride = 384
-```
-
----
-
-# Training Strategy
-
-## LOSO Cross Validation
-
-Leave-One-Subject-Out (LOSO) evaluation is used to avoid subject leakage and validate cross-subject generalization.
-
-## Loss Function
-
-The final objective combines:
-
-```math
-L = L_{CE} + \lambda_{seed} L_{SEED} + \lambda_{MMD} L_{MMD}
-```
-
-Where:
-
-* Cross-entropy loss performs classification
-* MMD reduces domain discrepancy
-* Auxiliary SEED-IV supervision improves robustness
-
----
-
 # Performance Summary
 
 | Model Version    | Accuracy |
@@ -153,15 +79,25 @@ The final architecture improves:
 
 ---
 
+
 # Repository Structure
 
 ```text
 ├── data/                     # EEG datasets
 ├── output/                   # Training outputs and plots
 ├── live_demo/                # Demo data (ignored in git)
-├── model_snn.py              # SNN model architecture
-├── domain_alignment.py       # CORAL and MMD
-├── run_pipeline.py           # Main training pipeline
+├── pipeline/                 # Core training pipeline modules
+│   ├── config.py             # CLI args and experiment config
+│   ├── datasets.py           # TensorDataset builders and unlabeled dataset wrapper
+│   ├── domain_alignment.py   # Domain adaptation utilities
+│   ├── load.py               # Dataset loading
+│   ├── model.py              # ANN/SNN model definitions
+│   ├── relabel.py            # Re-labeling logic
+│   ├── reporting.py          # Result export and plots
+│   ├── segment.py            # Artifact rejection and segmentation
+│   ├── train.py              # Main entry point
+│   ├── trainer.py            # Train/eval loops
+│   └── utils.py              # Shared helper functions
 ├── requirements.txt
 └── README.md
 ```
@@ -170,11 +106,11 @@ The final architecture improves:
 
 # Installation
 
-## Create Environment
+## Clone the repo
 
 ```bash
-python -m venv venv
-source venv/bin/activate
+git clone https://github.com/Jarvis2030/EmotionNET.git
+cd EmotionNET
 ```
 
 ## Install Dependencies
@@ -187,22 +123,26 @@ pip install -r requirements.txt
 
 # Run Training
 
+```bash
+cd pipeline
+```
+
 ## Standard Training
 
 ```bash
-python run_pipeline.py --snn
+python train.py --snn
 ```
 
 ## Disable CORAL
 
 ```bash
-python run_pipeline.py --snn --no-coral
+python train.py --snn --no-coral
 ```
 
-## Smoke Test
+## Smoke Test (With smaller dataset)
 
 ```bash
-python run_pipeline.py --smoke --snn
+python train.py --smoke --snn
 ```
 
 ---
